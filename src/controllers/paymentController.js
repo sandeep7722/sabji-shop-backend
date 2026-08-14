@@ -1,6 +1,7 @@
 const mongoose = require("mongoose");
 const Party = require("../models/Party");
 const Payment = require("../models/Payment");
+const StockMovement = require("../models/StockMovement");
 const asyncHandler = require("../utils/asyncHandler");
 
 const PAYMENT_TYPES = ["PAID", "RECEIVED"];
@@ -101,7 +102,88 @@ const getPayments = asyncHandler(async (req, res) => {
   res.json(payments);
 });
 
+const getPaymentSummary = asyncHandler(async (req, res) => {
+  const movements = await StockMovement.find({ partyId: { $ne: null } }).select("partyId type totalAmount").lean();
+  const payments = await Payment.find({ partyId: { $ne: null } }).select("partyId type amount").lean();
+  const summaryByParty = new Map();
+
+  function getPartySummary(partyId) {
+    const key = partyId.toString();
+
+    if (!summaryByParty.has(key)) {
+      summaryByParty.set(key, {
+        purchaseAmount: 0,
+        saleAmount: 0,
+        paidAmount: 0,
+        receivedAmount: 0,
+        balance: 0
+      });
+    }
+
+    return summaryByParty.get(key);
+  }
+
+  movements.forEach((movement) => {
+    const summary = getPartySummary(movement.partyId);
+    const amount = movement.totalAmount || 0;
+
+    if (movement.type === "IN") {
+      summary.purchaseAmount += amount;
+      summary.balance -= amount;
+    }
+
+    if (movement.type === "OUT") {
+      summary.saleAmount += amount;
+      summary.balance += amount;
+    }
+  });
+
+  payments.forEach((payment) => {
+    const summary = getPartySummary(payment.partyId);
+
+    if (payment.type === "PAID") {
+      summary.paidAmount += payment.amount;
+      summary.balance += payment.amount;
+    }
+
+    if (payment.type === "RECEIVED") {
+      summary.receivedAmount += payment.amount;
+      summary.balance -= payment.amount;
+    }
+  });
+
+  const totals = Array.from(summaryByParty.values()).reduce(
+    (result, partySummary) => {
+      result.purchaseAmount += partySummary.purchaseAmount;
+      result.saleAmount += partySummary.saleAmount;
+      result.paidAmount += partySummary.paidAmount;
+      result.receivedAmount += partySummary.receivedAmount;
+
+      if (partySummary.balance > 0) {
+        result.receivableAmount += partySummary.balance;
+      }
+
+      if (partySummary.balance < 0) {
+        result.payableAmount += Math.abs(partySummary.balance);
+      }
+
+      return result;
+    },
+    {
+      purchaseAmount: 0,
+      saleAmount: 0,
+      paidAmount: 0,
+      receivedAmount: 0,
+      receivableAmount: 0,
+      payableAmount: 0
+    }
+  );
+
+  res.json(totals);
+});
+
 module.exports = {
   createPayment,
-  getPayments
+  getPayments,
+  getPaymentSummary
 };
