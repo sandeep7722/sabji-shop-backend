@@ -65,6 +65,15 @@ const stockMovementSchema = new mongoose.Schema(
     referenceId: {
       type: mongoose.Schema.Types.ObjectId,
       default: null
+    },
+    isEdited: {
+      type: Boolean,
+      default: false,
+      index: true
+    },
+    editedAt: {
+      type: Date,
+      default: null
     }
   },
   {

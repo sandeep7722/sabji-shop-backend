@@ -109,11 +109,15 @@ async function getPartyOrThrow(partyId) {
   return party;
 }
 
-async function calculateCurrentStock(productId) {
+async function calculateCurrentStock(productId, excludeMovementId = null) {
   const match = {};
 
   if (productId) {
     match.productId = new mongoose.Types.ObjectId(productId);
+  }
+
+  if (excludeMovementId) {
+    match._id = { $ne: new mongoose.Types.ObjectId(excludeMovementId) };
   }
 
   const rows = await StockMovement.aggregate([
@@ -158,8 +162,8 @@ async function getCurrentStock() {
   });
 }
 
-async function ensureAvailable(productId, packets, weight) {
-  const current = await calculateCurrentStock(productId);
+async function ensureAvailable(productId, packets, weight, excludeMovementId = null) {
+  const current = await calculateCurrentStock(productId, excludeMovementId);
 
   if (current.packets < packets || current.weight < weight) {
     const error = new Error("Insufficient stock");
@@ -171,6 +175,30 @@ async function ensureAvailable(productId, packets, weight) {
       requestedWeight: weight
     };
     throw error;
+  }
+}
+
+async function ensureEditKeepsStockNonNegative(originalMovement, nextProductId, nextType, packets, weight) {
+  const affectedProductIds = new Set([originalMovement.productId.toString(), nextProductId.toString()]);
+  const nextSigned = addSignedQuantities(nextType, packets, weight);
+
+  for (const productId of affectedProductIds) {
+    const currentWithoutMovement = await calculateCurrentStock(productId, originalMovement._id);
+    const appliesToProduct = productId === nextProductId.toString();
+    const finalPackets = currentWithoutMovement.packets + (appliesToProduct ? nextSigned.packets : 0);
+    const finalWeight = currentWithoutMovement.weight + (appliesToProduct ? nextSigned.weight : 0);
+
+    if (finalPackets < 0 || finalWeight < 0) {
+      const error = new Error("Insufficient stock after edit");
+      error.statusCode = 400;
+      error.details = {
+        availablePackets: Math.max(0, currentWithoutMovement.packets),
+        availableWeight: Math.max(0, currentWithoutMovement.weight),
+        requestedPackets: packets,
+        requestedWeight: weight
+      };
+      throw error;
+    }
   }
 }
 
@@ -239,6 +267,121 @@ async function createMovement(input) {
       referenceId: movement._id
     });
   }
+
+  return movement;
+}
+
+function parseMovementDate(value) {
+  const movementDate = value ? new Date(value) : new Date();
+
+  if (Number.isNaN(movementDate.getTime())) {
+    const error = new Error("Invalid date");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  return movementDate;
+}
+
+async function syncMovementPayment(movement, paymentAmount, paymentMode, paymentNote) {
+  const paymentType = getAutoPaymentType(movement.type);
+  const linkedPayment = await Payment.findOne({
+    referenceType: "STOCK_MOVEMENT",
+    referenceId: movement._id
+  });
+
+  if (!movement.partyId || !paymentType || paymentAmount <= 0) {
+    if (linkedPayment) {
+      await linkedPayment.deleteOne();
+    }
+
+    return;
+  }
+
+  const paymentData = {
+    partyId: movement.partyId,
+    type: paymentType,
+    date: movement.date,
+    amount: paymentAmount,
+    mode: paymentMode || (linkedPayment ? linkedPayment.mode : "Cash"),
+    note: paymentNote || (linkedPayment ? linkedPayment.note : `Auto payment for stock ${movement.type}`),
+    referenceType: "STOCK_MOVEMENT",
+    referenceId: movement._id
+  };
+
+  if (linkedPayment) {
+    Object.assign(linkedPayment, paymentData);
+    await linkedPayment.save();
+    return;
+  }
+
+  await Payment.create(paymentData);
+}
+
+async function updateMovement(movementId, input) {
+  if (!mongoose.Types.ObjectId.isValid(movementId)) {
+    const error = new Error("Invalid movement id");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const movement = await StockMovement.findById(movementId);
+
+  if (!movement) {
+    const error = new Error("Movement not found");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const nextType = input.type || movement.type;
+
+  if (!MOVEMENT_TYPES.includes(nextType)) {
+    const error = new Error("Invalid movement type");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const product = await getProductOrThrow(input.productId || movement.productId);
+  const party = await getPartyOrThrow(input.partyId);
+  const packets = toNumber(input.packets, "packets");
+  const weight = toNumber(input.weight, "weight");
+  const totalAmount = toOptionalNumber(input.totalAmount, "totalAmount");
+  const paymentAmount = toOptionalNumber(input.paymentAmount, "paymentAmount");
+  const movementDate = parseMovementDate(input.date);
+  requirePositiveQuantity(packets, weight);
+
+  if (paymentAmount > 0 && !party) {
+    const error = new Error("partyId is required when paymentAmount is greater than zero");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (paymentAmount > totalAmount) {
+    const error = new Error("paymentAmount cannot be greater than totalAmount");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  await ensureEditKeepsStockNonNegative(movement, product._id, nextType, packets, weight);
+
+  movement.productId = product._id;
+  movement.partyId = party ? party._id : null;
+  movement.type = nextType;
+  movement.date = movementDate;
+  movement.packets = packets;
+  movement.weight = weight;
+  movement.totalAmount = totalAmount;
+  movement.partyName = party ? party.name : input.partyName || "";
+  movement.reason = input.reason || movement.reason || "";
+  movement.note = input.note || "";
+  movement.isEdited = true;
+  movement.editedAt = new Date();
+
+  await movement.save();
+  await syncMovementPayment(movement, paymentAmount, input.paymentMode, input.paymentNote);
+
+  await movement.populate("productId", "name isActive");
+  await movement.populate("partyId", "partyCode name type phone");
 
   return movement;
 }
@@ -333,6 +476,7 @@ module.exports = {
   getStockBalanceImpact,
   getAutoPaymentType,
   createMovement,
+  updateMovement,
   getCurrentStock,
   getHistory,
   MOVEMENT_TYPES

@@ -47,10 +47,16 @@ const getHistory = asyncHandler(async (req, res) => {
   res.json(history);
 });
 
+const updateHistoryEntry = asyncHandler(async (req, res) => {
+  const movement = await stockService.updateMovement(req.params.id, req.body);
+  res.json(movement);
+});
+
 module.exports = {
   stockIn,
   stockOut,
   stockAdjustment,
   getCurrentStock,
-  getHistory
+  getHistory,
+  updateHistoryEntry
 };
