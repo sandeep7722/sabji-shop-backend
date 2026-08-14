@@ -33,7 +33,43 @@ const createProduct = asyncHandler(async (req, res) => {
   res.status(201).json(product);
 });
 
+const updateProduct = asyncHandler(async (req, res) => {
+  const { name } = req.body;
+
+  if (typeof name !== "string" || !name.trim()) {
+    res.status(400);
+    throw new Error("Product name is required");
+  }
+
+  const product = await Product.findOne({ _id: req.params.id, isActive: true });
+
+  if (!product) {
+    res.status(404);
+    throw new Error("Product not found");
+  }
+
+  const normalizedName = name.trim();
+  const existingProduct = await Product.findOne({
+    _id: { $ne: product._id },
+    name: normalizedName
+  }).collation({
+    locale: "en",
+    strength: 2
+  });
+
+  if (existingProduct) {
+    res.status(409);
+    throw new Error("Product already exists");
+  }
+
+  product.name = normalizedName;
+  await product.save();
+
+  res.json(product);
+});
+
 module.exports = {
   getProducts,
-  createProduct
+  createProduct,
+  updateProduct
 };
