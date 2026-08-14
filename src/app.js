@@ -5,6 +5,7 @@ require("dotenv").config();
 const productRoutes = require("./routes/productRoutes");
 const partyRoutes = require("./routes/partyRoutes");
 const paymentRoutes = require("./routes/paymentRoutes");
+const summaryRoutes = require("./routes/summaryRoutes");
 const stockRoutes = require("./routes/stockRoutes");
 const { notFound, errorHandler } = require("./middleware/errorMiddleware");
 
@@ -20,6 +21,7 @@ app.get("/api/health", (req, res) => {
 app.use("/api/products", productRoutes);
 app.use("/api/parties", partyRoutes);
 app.use("/api/payments", paymentRoutes);
+app.use("/api/summary", summaryRoutes);
 app.use("/api/stock", stockRoutes);
 
 app.use(notFound);
