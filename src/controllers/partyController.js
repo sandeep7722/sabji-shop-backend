@@ -58,6 +58,57 @@ const createParty = asyncHandler(async (req, res) => {
   res.status(201).json(party);
 });
 
+const updateParty = asyncHandler(async (req, res) => {
+  validateObjectId(req.params.id, "partyId");
+
+  const { partyCode, name, type, phone, address, note, isActive } = req.body;
+
+  if (typeof partyCode !== "string" || !partyCode.trim()) {
+    res.status(400);
+    throw new Error("Party code is required");
+  }
+
+  if (typeof name !== "string" || !name.trim()) {
+    res.status(400);
+    throw new Error("Party name is required");
+  }
+
+  const party = await Party.findById(req.params.id);
+
+  if (!party) {
+    res.status(404);
+    throw new Error("Party not found");
+  }
+
+  const normalizedPartyCode = partyCode.trim().toUpperCase();
+  const existingParty = await Party.findOne({
+    _id: { $ne: party._id },
+    partyCode: normalizedPartyCode
+  }).collation({
+    locale: "en",
+    strength: 2
+  });
+
+  if (existingParty) {
+    res.status(409);
+    throw new Error("Party code already exists");
+  }
+
+  party.partyCode = normalizedPartyCode;
+  party.name = name.trim();
+  party.type = type || "BOTH";
+  party.phone = phone || "";
+  party.address = address || "";
+  party.note = note || "";
+
+  if (typeof isActive === "boolean") {
+    party.isActive = isActive;
+  }
+
+  await party.save();
+  res.json(party);
+});
+
 const getPartyDetails = asyncHandler(async (req, res) => {
   validateObjectId(req.params.id, "partyId");
 
@@ -152,5 +203,6 @@ const getPartyDetails = asyncHandler(async (req, res) => {
 module.exports = {
   getParties,
   createParty,
+  updateParty,
   getPartyDetails
 };
