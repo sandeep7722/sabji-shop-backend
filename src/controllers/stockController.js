@@ -52,6 +52,11 @@ const getSourceSalesReport = asyncHandler(async (req, res) => {
   res.json(report);
 });
 
+const getCustomerSalesReport = asyncHandler(async (req, res) => {
+  const report = await stockService.getCustomerSalesReport(req.query);
+  res.json(report);
+});
+
 const updateHistoryEntry = asyncHandler(async (req, res) => {
   const movement = await stockService.updateMovement(req.params.id, req.body);
   res.json(movement);
@@ -64,5 +69,6 @@ module.exports = {
   getCurrentStock,
   getHistory,
   getSourceSalesReport,
+  getCustomerSalesReport,
   updateHistoryEntry
 };

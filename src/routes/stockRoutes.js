@@ -6,6 +6,7 @@ const {
   getCurrentStock,
   getHistory,
   getSourceSalesReport,
+  getCustomerSalesReport,
   updateHistoryEntry
 } = require("../controllers/stockController");
 
@@ -16,6 +17,7 @@ router.post("/out", stockOut);
 router.post("/adjustment", stockAdjustment);
 router.get("/current", getCurrentStock);
 router.get("/source-sales", getSourceSalesReport);
+router.get("/customer-sales", getCustomerSalesReport);
 router.get("/history", getHistory);
 router.patch("/history/:id", updateHistoryEntry);
 

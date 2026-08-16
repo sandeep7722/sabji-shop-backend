@@ -594,6 +594,91 @@ async function getSourceSalesReport(filters) {
   return { totals, rows };
 }
 
+function applyDateRange(query, filters) {
+  if (filters.from || filters.to) {
+    query.date = {};
+  }
+
+  if (filters.from) {
+    query.date.$gte = new Date(filters.from);
+  }
+
+  if (filters.to) {
+    const toDate = new Date(filters.to);
+    toDate.setHours(23, 59, 59, 999);
+    query.date.$lte = toDate;
+  }
+}
+
+async function getCustomerSalesReport(filters) {
+  const query = { type: "OUT", partyId: { $ne: null } };
+
+  if (filters.customerId) {
+    if (!mongoose.Types.ObjectId.isValid(filters.customerId)) {
+      const error = new Error("Invalid customerId");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    query.partyId = filters.customerId;
+  }
+
+  applyDateRange(query, filters);
+
+  const movements = await StockMovement.find(query)
+    .populate("productId", "name isActive")
+    .populate("partyId", "partyCode name type phone")
+    .populate("sourcePartyId", "partyCode name type phone")
+    .sort({ date: -1, createdAt: -1 })
+    .lean();
+
+  const movementIds = movements.map((movement) => movement._id);
+  const syncedPayments = await Payment.find({
+    referenceType: "STOCK_MOVEMENT",
+    referenceId: { $in: movementIds }
+  }).lean();
+  const paymentsByMovement = new Map(syncedPayments.map((payment) => [payment.referenceId.toString(), payment]));
+
+  const rows = movements.map((movement) => {
+    const syncedPayment = paymentsByMovement.get(movement._id.toString()) || null;
+
+    return {
+      ...movement,
+      paymentAmount: syncedPayment ? syncedPayment.amount : 0,
+      paymentType: syncedPayment ? syncedPayment.type : "",
+      paymentMode: syncedPayment ? syncedPayment.mode : ""
+    };
+  });
+
+  const customerIds = filters.customerId
+    ? [new mongoose.Types.ObjectId(filters.customerId)]
+    : Array.from(new Set(rows.map((movement) => movement.partyId?._id?.toString() || movement.partyId?.toString()).filter(Boolean))).map(
+        (partyId) => new mongoose.Types.ObjectId(partyId)
+      );
+
+  const paymentQuery = { type: "RECEIVED", partyId: { $in: customerIds } };
+  applyDateRange(paymentQuery, filters);
+  const customerPayments = customerIds.length ? await Payment.find(paymentQuery).select("amount").lean() : [];
+
+  const totals = rows.reduce(
+    (result, movement) => {
+      result.sellPackets += movement.packets || 0;
+      result.sellWeight += movement.weight || 0;
+      result.sellAmount += movement.totalAmount || 0;
+      return result;
+    },
+    { sellPackets: 0, sellWeight: 0, sellAmount: 0, paidAmount: 0, balanceAmount: 0 }
+  );
+
+  customerPayments.forEach((payment) => {
+    totals.paidAmount += payment.amount || 0;
+  });
+
+  totals.balanceAmount = Math.max(0, totals.sellAmount - totals.paidAmount);
+
+  return { totals, rows };
+}
+
 module.exports = {
   addSignedQuantities,
   getStockBalanceImpact,
@@ -603,5 +688,6 @@ module.exports = {
   getCurrentStock,
   getHistory,
   getSourceSalesReport,
+  getCustomerSalesReport,
   MOVEMENT_TYPES
 };
