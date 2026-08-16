@@ -16,6 +16,12 @@ const stockMovementSchema = new mongoose.Schema(
       default: null,
       index: true
     },
+    sourcePartyId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Party",
+      default: null,
+      index: true
+    },
     type: {
       type: String,
       enum: movementTypes,

@@ -205,6 +205,7 @@ async function ensureEditKeepsStockNonNegative(originalMovement, nextProductId, 
 async function createMovement(input) {
   const product = await getProductOrThrow(input.productId);
   const party = await getPartyOrThrow(input.partyId);
+  const sourceParty = input.type === "OUT" ? await getPartyOrThrow(input.sourcePartyId) : null;
   const packets = toNumber(input.packets, "packets");
   const weight = toNumber(input.weight, "weight");
   const totalAmount = toOptionalNumber(input.totalAmount, "totalAmount");
@@ -238,6 +239,7 @@ async function createMovement(input) {
   const movement = await StockMovement.create({
     productId: product._id,
     partyId: party ? party._id : null,
+    sourcePartyId: sourceParty ? sourceParty._id : null,
     type: input.type,
     date: movementDate,
     packets,
@@ -252,6 +254,7 @@ async function createMovement(input) {
 
   await movement.populate("productId", "name isActive");
   await movement.populate("partyId", "partyCode name type phone");
+  await movement.populate("sourcePartyId", "partyCode name type phone");
 
   const paymentType = getAutoPaymentType(input.type);
 
@@ -343,6 +346,7 @@ async function updateMovement(movementId, input) {
 
   const product = await getProductOrThrow(input.productId || movement.productId);
   const party = await getPartyOrThrow(input.partyId);
+  const sourceParty = nextType === "OUT" ? await getPartyOrThrow(input.sourcePartyId) : null;
   const packets = toNumber(input.packets, "packets");
   const weight = toNumber(input.weight, "weight");
   const totalAmount = toOptionalNumber(input.totalAmount, "totalAmount");
@@ -366,6 +370,7 @@ async function updateMovement(movementId, input) {
 
   movement.productId = product._id;
   movement.partyId = party ? party._id : null;
+  movement.sourcePartyId = sourceParty ? sourceParty._id : null;
   movement.type = nextType;
   movement.date = movementDate;
   movement.packets = packets;
@@ -382,6 +387,7 @@ async function updateMovement(movementId, input) {
 
   await movement.populate("productId", "name isActive");
   await movement.populate("partyId", "partyCode name type phone");
+  await movement.populate("sourcePartyId", "partyCode name type phone");
 
   return movement;
 }
@@ -436,6 +442,7 @@ async function getHistory(filters) {
   const movements = await StockMovement.find(query)
     .populate("productId", "name isActive")
     .populate("partyId", "partyCode name type phone")
+    .populate("sourcePartyId", "partyCode name type phone")
     .sort({ date: -1, createdAt: -1 })
     .lean();
 
@@ -471,6 +478,122 @@ async function getHistory(filters) {
   });
 }
 
+async function getSourceSalesReport(filters) {
+  const query = { type: "OUT", sourcePartyId: { $ne: null } };
+
+  if (filters.sourcePartyId) {
+    if (!mongoose.Types.ObjectId.isValid(filters.sourcePartyId)) {
+      const error = new Error("Invalid sourcePartyId");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    query.sourcePartyId = filters.sourcePartyId;
+  }
+
+  if (filters.from || filters.to) {
+    query.date = {};
+  }
+
+  if (filters.from) {
+    query.date.$gte = new Date(filters.from);
+  }
+
+  if (filters.to) {
+    const toDate = new Date(filters.to);
+    toDate.setHours(23, 59, 59, 999);
+    query.date.$lte = toDate;
+  }
+
+  const movements = await StockMovement.find(query)
+    .populate("productId", "name isActive")
+    .populate("partyId", "partyCode name type phone")
+    .populate("sourcePartyId", "partyCode name type phone")
+    .sort({ date: -1, createdAt: -1 })
+    .lean();
+
+  const movementIds = movements.map((movement) => movement._id);
+  const syncedPayments = await Payment.find({
+    referenceType: "STOCK_MOVEMENT",
+    referenceId: { $in: movementIds }
+  }).lean();
+  const paymentsByMovement = new Map(syncedPayments.map((payment) => [payment.referenceId.toString(), payment]));
+
+  const rows = movements.map((movement) => {
+    const syncedPayment = paymentsByMovement.get(movement._id.toString()) || null;
+
+    return {
+      ...movement,
+      paymentAmount: syncedPayment ? syncedPayment.amount : 0,
+      paymentType: syncedPayment ? syncedPayment.type : "",
+      paymentMode: syncedPayment ? syncedPayment.mode : ""
+    };
+  });
+
+  const sourcePartyIds = filters.sourcePartyId
+    ? [new mongoose.Types.ObjectId(filters.sourcePartyId)]
+    : Array.from(new Set(rows.map((movement) => movement.sourcePartyId?._id?.toString() || movement.sourcePartyId?.toString()).filter(Boolean))).map(
+        (partyId) => new mongoose.Types.ObjectId(partyId)
+      );
+
+  const sourcePurchaseQuery = { type: "IN", partyId: { $in: sourcePartyIds } };
+  const sourcePaymentQuery = { type: "PAID", partyId: { $in: sourcePartyIds } };
+
+  if (filters.from || filters.to) {
+    sourcePurchaseQuery.date = {};
+    sourcePaymentQuery.date = {};
+  }
+
+  if (filters.from) {
+    sourcePurchaseQuery.date.$gte = new Date(filters.from);
+    sourcePaymentQuery.date.$gte = new Date(filters.from);
+  }
+
+  if (filters.to) {
+    const toDate = new Date(filters.to);
+    toDate.setHours(23, 59, 59, 999);
+    sourcePurchaseQuery.date.$lte = toDate;
+    sourcePaymentQuery.date.$lte = toDate;
+  }
+
+  const sourcePurchases = sourcePartyIds.length
+    ? await StockMovement.find(sourcePurchaseQuery).select("packets weight totalAmount").lean()
+    : [];
+  const sourcePayments = sourcePartyIds.length ? await Payment.find(sourcePaymentQuery).select("amount").lean() : [];
+
+  const totals = rows.reduce(
+    (result, movement) => {
+      result.salePackets += movement.packets || 0;
+      result.saleWeight += movement.weight || 0;
+      result.saleAmount += movement.totalAmount || 0;
+      result.receivedAmount += movement.paymentType === "RECEIVED" ? movement.paymentAmount || 0 : 0;
+      return result;
+    },
+    {
+      buyPackets: 0,
+      buyWeight: 0,
+      buyAmount: 0,
+      paidAmount: 0,
+      salePackets: 0,
+      saleWeight: 0,
+      saleAmount: 0,
+      receivedAmount: 0
+    }
+  );
+
+  sourcePurchases.forEach((purchase) => {
+    totals.buyPackets += purchase.packets || 0;
+    totals.buyWeight += purchase.weight || 0;
+    totals.buyAmount += purchase.totalAmount || 0;
+  });
+
+  sourcePayments.forEach((payment) => {
+    totals.paidAmount += payment.amount || 0;
+  });
+
+  return { totals, rows };
+}
+
 module.exports = {
   addSignedQuantities,
   getStockBalanceImpact,
@@ -479,5 +602,6 @@ module.exports = {
   updateMovement,
   getCurrentStock,
   getHistory,
+  getSourceSalesReport,
   MOVEMENT_TYPES
 };
