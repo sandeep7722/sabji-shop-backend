@@ -585,6 +585,7 @@ async function getSourceSalesReport(filters) {
     const syncedPayment = paymentsByMovement.get(movement._id.toString()) || null;
 
     return {
+      entryType: "STOCK",
       ...movement,
       paymentAmount: syncedPayment ? syncedPayment.amount : 0,
       paymentType: syncedPayment ? syncedPayment.type : "",
@@ -712,15 +713,37 @@ async function getCustomerSalesReport(filters) {
     };
   });
 
-  const customerIds = filters.customerId
-    ? [new mongoose.Types.ObjectId(filters.customerId)]
-    : Array.from(new Set(rows.map((movement) => movement.partyId?._id?.toString() || movement.partyId?.toString()).filter(Boolean))).map(
-        (partyId) => new mongoose.Types.ObjectId(partyId)
-      );
-
-  const paymentQuery = { type: "RECEIVED", partyId: { $in: customerIds } };
+  const paymentQuery = { type: "RECEIVED" };
+  if (filters.customerId) {
+    paymentQuery.partyId = filters.customerId;
+  }
   applyDateRange(paymentQuery, filters);
-  const customerPayments = customerIds.length ? await Payment.find(paymentQuery).select("amount").lean() : [];
+  const customerPayments = await Payment.find(paymentQuery).select("amount").lean();
+
+  const manualPaymentQuery = { ...paymentQuery, referenceType: { $ne: "STOCK_MOVEMENT" } };
+  const manualPayments = await Payment.find(manualPaymentQuery)
+    .populate("partyId", "partyCode name type phone")
+    .sort({ date: -1, createdAt: -1 })
+    .lean();
+
+  const paymentRows = manualPayments.map((payment) => ({
+    _id: payment._id,
+    entryType: "PAYMENT",
+    productId: null,
+    partyId: payment.partyId,
+    sourcePartyId: null,
+    type: "PAYMENT_RECEIVED",
+    date: payment.date,
+    packets: 0,
+    weight: 0,
+    totalAmount: 0,
+    paymentAmount: payment.amount || 0,
+    paymentType: payment.type,
+    paymentMode: payment.mode || "",
+    note: payment.note || "",
+    createdAt: payment.createdAt,
+    updatedAt: payment.updatedAt
+  }));
 
   const totals = rows.reduce(
     (result, movement) => {
@@ -738,7 +761,14 @@ async function getCustomerSalesReport(filters) {
 
   totals.balanceAmount = Math.max(0, totals.sellAmount - totals.paidAmount);
 
-  return { totals, rows };
+  return {
+    totals,
+    rows: [...rows, ...paymentRows].sort((first, second) => {
+      const dateDiff = new Date(second.date).getTime() - new Date(first.date).getTime();
+      if (dateDiff !== 0) return dateDiff;
+      return new Date(second.createdAt || 0).getTime() - new Date(first.createdAt || 0).getTime();
+    })
+  };
 }
 
 module.exports = {
