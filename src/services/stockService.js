@@ -462,11 +462,12 @@ async function getHistory(filters) {
     ])
   );
 
-  return movements.map((movement) => {
+  const movementRows = movements.map((movement) => {
     const signed = addSignedQuantities(movement.type, movement.packets, movement.weight);
     const syncedPayment = paymentsByMovement.get(movement._id.toString()) || null;
 
     return {
+      entryType: "STOCK",
       ...movement,
       signedPackets: signed.packets,
       signedWeight: signed.weight,
@@ -475,6 +476,67 @@ async function getHistory(filters) {
       paymentMode: syncedPayment ? syncedPayment.mode : "",
       balanceImpact: getStockBalanceImpact(movement.type, movement.totalAmount || 0)
     };
+  });
+
+  let paymentRows = [];
+
+  if (!filters.productId && !filters.type) {
+    const paymentQuery = { referenceType: { $ne: "STOCK_MOVEMENT" } };
+
+    if (filters.partyId) {
+      paymentQuery.partyId = filters.partyId;
+    }
+
+    if (filters.from || filters.to) {
+      paymentQuery.date = {};
+    }
+
+    if (filters.from) {
+      paymentQuery.date.$gte = new Date(filters.from);
+    }
+
+    if (filters.to) {
+      const toDate = new Date(filters.to);
+      toDate.setHours(23, 59, 59, 999);
+      paymentQuery.date.$lte = toDate;
+    }
+
+    const standalonePayments = await Payment.find(paymentQuery)
+      .populate("partyId", "partyCode name type phone")
+      .sort({ date: -1, createdAt: -1 })
+      .lean();
+
+    paymentRows = standalonePayments.map((payment) => ({
+      _id: payment._id,
+      entryType: "PAYMENT",
+      productId: null,
+      partyId: payment.partyId,
+      sourcePartyId: null,
+      type: payment.type === "PAID" ? "PAYMENT_PAID" : "PAYMENT_RECEIVED",
+      date: payment.date,
+      packets: 0,
+      weight: 0,
+      signedPackets: 0,
+      signedWeight: 0,
+      totalAmount: 0,
+      paymentAmount: payment.amount || 0,
+      paymentType: payment.type,
+      paymentMode: payment.mode || "",
+      balanceImpact: payment.type === "PAID" ? payment.amount || 0 : (payment.amount || 0) * -1,
+      note: payment.note || "",
+      reason: "",
+      partyName: "",
+      referenceType: payment.referenceType || "",
+      referenceId: payment.referenceId || null,
+      createdAt: payment.createdAt,
+      updatedAt: payment.updatedAt
+    }));
+  }
+
+  return [...movementRows, ...paymentRows].sort((first, second) => {
+    const dateDiff = new Date(second.date).getTime() - new Date(first.date).getTime();
+    if (dateDiff !== 0) return dateDiff;
+    return new Date(second.createdAt || 0).getTime() - new Date(first.createdAt || 0).getTime();
   });
 }
 
