@@ -412,7 +412,7 @@ async function getHistory(filters) {
       throw error;
     }
 
-    query.partyId = filters.partyId;
+    query.$or = [{ partyId: filters.partyId }, { sourcePartyId: filters.partyId }];
   }
 
   if (filters.type) {
@@ -640,7 +640,9 @@ async function getSourceSalesReport(filters) {
       salePackets: 0,
       saleWeight: 0,
       saleAmount: 0,
-      receivedAmount: 0
+      receivedAmount: 0,
+      remainingPackets: 0,
+      remainingWeight: 0
     }
   );
 
@@ -653,6 +655,9 @@ async function getSourceSalesReport(filters) {
   sourcePayments.forEach((payment) => {
     totals.paidAmount += payment.amount || 0;
   });
+
+  totals.remainingPackets = totals.buyPackets - totals.salePackets;
+  totals.remainingWeight = totals.buyWeight - totals.saleWeight;
 
   return { totals, rows };
 }
