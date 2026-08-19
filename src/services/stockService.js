@@ -87,6 +87,19 @@ function getAutoPaymentType(movementType) {
   return null;
 }
 
+function hasInputValue(value) {
+  return value !== undefined && value !== null && value !== "";
+}
+
+function calculateMovementAmount(input, weight) {
+  const hasRate = hasInputValue(input.ratePerKg);
+  const ratePerKg = hasRate ? toNumber(input.ratePerKg, "ratePerKg") : 0;
+  const otherExpense = toOptionalNumber(input.otherExpense, "otherExpense");
+  const totalAmount = hasRate ? weight * ratePerKg + otherExpense : toOptionalNumber(input.totalAmount, "totalAmount");
+
+  return { ratePerKg, otherExpense, totalAmount };
+}
+
 async function getPartyOrThrow(partyId) {
   if (!partyId) {
     return null;
@@ -208,7 +221,7 @@ async function createMovement(input) {
   const sourceParty = input.type === "OUT" ? await getPartyOrThrow(input.sourcePartyId) : null;
   const packets = toNumber(input.packets, "packets");
   const weight = toNumber(input.weight, "weight");
-  const totalAmount = toOptionalNumber(input.totalAmount, "totalAmount");
+  const { ratePerKg, otherExpense, totalAmount } = calculateMovementAmount(input, weight);
   const paymentAmount = toOptionalNumber(input.paymentAmount, "paymentAmount");
   requirePositiveQuantity(packets, weight);
 
@@ -245,6 +258,8 @@ async function createMovement(input) {
     packets,
     weight,
     totalAmount,
+    ratePerKg,
+    otherExpense,
     partyName: party ? party.name : input.partyName || "",
     reason: input.reason || "",
     note: input.note || "",
@@ -349,7 +364,7 @@ async function updateMovement(movementId, input) {
   const sourceParty = nextType === "OUT" ? await getPartyOrThrow(input.sourcePartyId) : null;
   const packets = toNumber(input.packets, "packets");
   const weight = toNumber(input.weight, "weight");
-  const totalAmount = toOptionalNumber(input.totalAmount, "totalAmount");
+  const { ratePerKg, otherExpense, totalAmount } = calculateMovementAmount(input, weight);
   const paymentAmount = toOptionalNumber(input.paymentAmount, "paymentAmount");
   const movementDate = parseMovementDate(input.date);
   requirePositiveQuantity(packets, weight);
@@ -376,6 +391,8 @@ async function updateMovement(movementId, input) {
   movement.packets = packets;
   movement.weight = weight;
   movement.totalAmount = totalAmount;
+  movement.ratePerKg = ratePerKg;
+  movement.otherExpense = otherExpense;
   movement.partyName = party ? party.name : input.partyName || "";
   movement.reason = input.reason || movement.reason || "";
   movement.note = input.note || "";
