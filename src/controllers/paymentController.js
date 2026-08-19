@@ -182,8 +182,70 @@ const getPaymentSummary = asyncHandler(async (req, res) => {
   res.json(totals);
 });
 
+const getCollectionList = asyncHandler(async (req, res) => {
+  const movements = await StockMovement.find({ partyId: { $ne: null } }).select("partyId type totalAmount").lean();
+  const payments = await Payment.find({ partyId: { $ne: null } }).select("partyId type amount").lean();
+  const balanceByParty = new Map();
+
+  function addBalance(partyId, amount) {
+    const key = partyId.toString();
+    balanceByParty.set(key, (balanceByParty.get(key) || 0) + amount);
+  }
+
+  movements.forEach((movement) => {
+    const amount = movement.totalAmount || 0;
+
+    if (movement.type === "IN") {
+      addBalance(movement.partyId, amount * -1);
+    }
+
+    if (movement.type === "OUT") {
+      addBalance(movement.partyId, amount);
+    }
+  });
+
+  payments.forEach((payment) => {
+    if (payment.type === "PAID") {
+      addBalance(payment.partyId, payment.amount || 0);
+    }
+
+    if (payment.type === "RECEIVED") {
+      addBalance(payment.partyId, (payment.amount || 0) * -1);
+    }
+  });
+
+  const receivablePartyIds = Array.from(balanceByParty.entries())
+    .filter(([, balance]) => balance > 0)
+    .map(([partyId]) => partyId);
+
+  if (!receivablePartyIds.length) {
+    res.json([]);
+    return;
+  }
+
+  const parties = await Party.find({ _id: { $in: receivablePartyIds }, isActive: true })
+    .select("partyCode name phone address")
+    .sort({ name: 1 })
+    .lean();
+
+  const rows = parties
+    .map((party) => ({
+      _id: party._id,
+      partyCode: party.partyCode,
+      name: party.name,
+      phone: party.phone || "",
+      address: party.address || "",
+      collectionAmount: balanceByParty.get(party._id.toString()) || 0
+    }))
+    .filter((party) => party.collectionAmount > 0)
+    .sort((first, second) => second.collectionAmount - first.collectionAmount || first.name.localeCompare(second.name));
+
+  res.json(rows);
+});
+
 module.exports = {
   createPayment,
   getPayments,
-  getPaymentSummary
+  getPaymentSummary,
+  getCollectionList
 };
